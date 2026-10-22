@@ -38,7 +38,7 @@ impl Runtime {
                     let mut events = Events::with_capacity(100);
                     // This call blocks until the self.poll.registry() is notified
                     // The OS wake us up when an event has happened
-                    // Both the runtime and the reactor work with the registry
+                    // Both the runtime and the reactor work with the registry, introducing coupling
                     // This means that runtime is blocked by 1 reactor (Poll)
                     self.poll.poll(&mut events, None).unwrap();
                 }

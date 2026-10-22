@@ -1,4 +1,4 @@
-- [epoll](#epoll)
+- [epoll crate](#epoll-crate)
   - [How It Works](#how-it-works)
   - [Linux Syscalls](#linux-syscalls)
   - [Run the Example](#run-the-example)
@@ -15,9 +15,14 @@
   - [Mental Model: "Advance One Step Per Poll"](#mental-model-advance-one-step-per-poll)
   - [Running](#running)
   - [Notes and Limits](#notes-and-limits)
+- [runtime crate](#runtime-crate)
+  - [Big Picture](#big-picture-1)
+  - [Runtime and Reactor](#runtime-and-reactor)
+  - [HTTP Future and Scheduling](#http-future-and-scheduling)
+  - [Running](#running-1)
 
 
-# epoll
+# epoll crate
 
 This workspace crate is a small Linux I/O polling example built directly on
 the `epoll` system calls. It demonstrates waiting for readiness notifications
@@ -212,3 +217,63 @@ Make sure the local HTTP server expected at `127.0.0.1:8080` is running.
 - It uses busy polling in `main` (no event loop wakeups).
 - `join_all` output is currently a placeholder `String`.
 - Errors are mostly handled with `panic!`/`unwrap()` for simplicity.
+
+# runtime crate
+
+The `runtime` crate is the next step after `coroutine`: it keeps the custom
+`Future`, `PollState`, and `join_all` model, but adds an operating-system-backed
+reactor so the program does not have to busy-poll while sockets are waiting for
+data. It uses Mio to provide the readiness polling abstraction.
+
+## Big Picture
+
+The program creates a top-level `Coroutine1` and passes it to
+`Runtime::block_on`. The runtime repeatedly polls that future. When it returns
+`NotReady`, the runtime waits for socket readiness; once Mio reports activity,
+it polls the future tree again. The program completes when the top-level future
+returns `Ready`.
+
+Compared with the `coroutine` crate, the key change is what happens between
+polls: `coroutine` immediately polls again, while `runtime` can block in the OS
+reactor until an I/O event occurs.
+
+## Runtime and Reactor
+
+In `src/runtime.rs`, `Runtime` owns a Mio `Poll` instance. `Runtime::new`
+creates the poller and stores a cloned Mio `Registry` in a process-wide
+`OnceLock`. `block_on` runs the top-level future and, when it is not ready,
+calls Mio's `poll` with no timeout. This parks the thread until registered I/O
+is ready rather than spinning continuously.
+
+The HTTP future accesses that shared registry to register its socket for
+readability. This connects the executor (which polls futures) to the reactor
+(which waits for I/O readiness).
+
+## HTTP Future and Scheduling
+
+In `src/http.rs`, `Http::get` creates an `HttpGetFuture`. On its first poll,
+the future connects to `127.0.0.1:8080`, makes the socket nonblocking, sends an
+HTTP request, and registers the socket for readable events. It then reads
+available data until it reaches EOF or the socket returns `WouldBlock`.
+
+`join_all` continues polling each unfinished request future. A future that
+returns `NotReady` yields control to the others; when all requests are waiting,
+`Runtime::block_on` waits in Mio. When I/O becomes ready, the runtime polls the
+future tree again so the HTTP futures can continue reading.
+
+## Running
+
+The runtime example connects to the delay server at `127.0.0.1:8080`. Start the
+server from the workspace root in one terminal:
+
+```sh
+cargo run -p delayserver
+```
+
+Then run the runtime example from the workspace root in another terminal:
+
+```sh
+cargo run -p runtime
+```
+
+The reactor registry is global, so the executor and reactor are coupled and only one runtime instance is supported in a process.
