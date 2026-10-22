@@ -7,10 +7,34 @@ use http::Http;
 use runtime::Waker;
 use std::time::Instant;
 
+// This function demonstrates 2 executors in separate threads awaken by the same Reactor
+fn parallel_executors() {
+    use std::thread::Builder;
+    let mut executor = runtime::init();
+    let mut handles = vec![];
+    // Spawn a few threads to run executors in parallel
+    for i in 1..2 {
+        let name = format!("thread-{i}");
+        let h = Builder::new()
+            .name(name)
+            .spawn(move || {
+                let mut executor = runtime::Executor::new();
+                executor.block_on(Coroutine1::new());
+            })
+            .unwrap();
+        handles.push(h);
+    }
+    executor.block_on(Coroutine1::new());
+    handles.into_iter().for_each(|h| h.join().unwrap());
+}
+
 fn main() {
     let start = Instant::now();
+    // Initialize the reactor and get the executor for the main thread
     let mut executor = runtime::init();
     executor.block_on(Coroutine1::new());
+    // uncomment the following line to run the parallel executors test
+    // parallel_executors();
 
     println!("\nELAPSED TIME: {}", start.elapsed().as_secs_f32());
 }

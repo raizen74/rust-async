@@ -107,6 +107,26 @@ the token registered by the HTTP future, allowing the reactor to find and wake
 the right task. On EOF, the future deregisters its stream and returns the
 collected response.
 
+## Multiple Executors on Separate Threads, awaken by the same Reactor
+
+`fn parallel_executors` demonstrates running more than one executor
+at the same time. Calls `runtime::init()` once on the main thread,
+which starts the reactor, then runs one `Executor::block_on` on the main thread
+and creates one additional thread with its own `Executor::new()` and
+`block_on`. The loop `1..2` creates exactly one extra executor thread, so this
+example runs two executors in total. Each executor runs its own `Coroutine1`,
+which spawns five request tasks into that executor's task queue.
+
+Both executors use the **same reactor**, not separate reactors. The reactor is
+stored in a process-wide `OnceLock`, and `runtime::init()` is called only once.
+Its Mio `Poll`, registry, event loop, and waker map are shared by both
+executor threads. Each executor has separate thread-local task storage and a
+ready queue, while each task's `Waker` records the thread that polled it. When
+the shared reactor receives an event, it invokes that task's waker; the `Waker::wake`
+method queues the task on its owning executor and unparks the thread where the executor runs. The
+reactor's atomic ID generator gives sockets unique tokens across both executors.
+
+
 ## Run the Example
 
 The example expects the workspace delay server at `127.0.0.1:8080`. Start the
